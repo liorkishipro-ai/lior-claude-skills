@@ -39,6 +39,21 @@ New-Item -ItemType Directory -Force -Path $SkillsDir | Out-Null
 # "owner/repo::skill-name" installs just one skill from a multi-skill repo.
 $ThirdPartySkills = @(
     "julianoczkowski/designer-skills"
+
+    # K-Dense-AI/scientific-agent-skills ships 163 skills. Only a targeted subset is
+    # installed: 163 descriptions would load into every session's context, and most
+    # (astropy, cirq, diffdock) are irrelevant here.
+    # DELIBERATELY EXCLUDED: matplotlib, seaborn, scientific-visualization. They trigger
+    # on plotting and would compete with graphing-guide, which owns the house style and
+    # the Hebrew RTL rules. Do not add them without re-reading that decision.
+    "K-Dense-AI/scientific-agent-skills::neurokit2"
+    "K-Dense-AI/scientific-agent-skills::statistical-analysis"
+    "K-Dense-AI/scientific-agent-skills::statistical-power"
+    "K-Dense-AI/scientific-agent-skills::statsmodels"
+    "K-Dense-AI/scientific-agent-skills::scikit-learn"
+    "K-Dense-AI/scientific-agent-skills::scientific-writing"
+    "K-Dense-AI/scientific-agent-skills::citation-management"
+    "K-Dense-AI/scientific-agent-skills::umap-learn"
 )
 # ----------------------------------------------------------------------
 
@@ -51,8 +66,15 @@ if (-not (Get-Command npx -ErrorAction SilentlyContinue)) {
             $repo = $parts[0]
             $skillName = $parts[1]
             Log "Installing '$skillName' from $repo (npx skills)"
+            # Do NOT trust npx's exit code. It attempts every agent it knows about
+            # and returns non-zero when one of them (Eve, PromptScript) rejects a
+            # global install, even though Claude Code succeeded. Verify the outcome.
             npx -y skills add $repo --skill $skillName -a claude-code -g -y
-            if ($LASTEXITCODE -ne 0) { Err "Failed to install $skillName from $repo - continuing" }
+            if (Test-Path (Join-Path $SkillsDir $skillName)) {
+                Log "OK: $skillName present in $SkillsDir"
+            } else {
+                Err "$skillName did NOT land in $SkillsDir after install - investigate"
+            }
         } else {
             Log "Installing all skills from $entry (npx skills)"
             npx -y skills add $entry --all -a claude-code -g -y

@@ -13,9 +13,10 @@ after it is background and troubleshooting.
 | Repo | `https://github.com/liorkishipro-ai/lior-claude-skills.git` |
 | GitHub account | `liorkishipro-ai`, HTTPS (not SSH) |
 | Clone location | `~/lior-claude-skills` |
-| Skills load from | `~/.claude/skills` — **everything here is a symlink**, never real content |
-| Your skills' real home | `~/lior-claude-skills/<skill>/` (the clone) |
-| Third-party skills' real home | `~/.agents/skills/<skill>/` (managed by the `skills` CLI) |
+| Skills load from | `~/.claude/skills` — a flat mix of symlinks and real folders |
+| Your skills' real home | `~/lior-claude-skills/<skill>/` (the clone), always via symlink |
+| Third-party, whole-repo install | `~/.agents/skills/<skill>/`, symlinked in |
+| Third-party, single-skill install | copied directly into `~/.claude/skills/<skill>/` |
 | Authoritative scripts | `install-skills.sh` (mac/linux), `install-skills.ps1` (windows) — in the repo root |
 | Prerequisites | `git`; `gh` for painless auth; Node.js/`npx` only if you want third-party skills |
 
@@ -81,15 +82,25 @@ Confirm:
 ls -la ~/.claude/skills
 ```
 
-Every entry is a symlink (junction on windows); what distinguishes them is the **target**:
+There are **three** installation shapes, and `ls -la` tells them apart at a glance:
 
 ```
-graphing-guide  -> /Users/you/lior-claude-skills/graphing-guide     # yours, absolute, into the clone
-design-review   -> ../../.agents/skills/design-review               # third-party, relative, into ~/.agents
+graphing-guide  -> /Users/you/lior-claude-skills/graphing-guide   # YOURS: symlink into the clone
+design-review   -> ../../.agents/skills/design-review             # third-party, installed --all: symlink
+neurokit2                                                          # third-party, installed --skill: a COPY
 ```
 
-Read the arrow, not the name. That one line tells you which system owns a skill and therefore how
-to update it.
+Read the arrow, not the name. No arrow means a real folder sitting in `~/.claude/skills` — a copy
+that no git repo and no clone owns.
+
+**Why two different third-party shapes?** The mode you install with decides:
+
+| Install | Result |
+|---|---|
+| `npx skills add owner/repo --all` | content in `~/.agents/skills/`, symlink into `~/.claude/skills` |
+| `npx skills add owner/repo --skill <name>` | **copied straight into** `~/.claude/skills`, nothing in `~/.agents` |
+
+Neither is editable in place — see the end of Phase 5.
 
 > `install-skills.ps1` has not yet been executed on a real Windows machine. The first lab PC is
 > its first true test — expect to debug it, and fix it in the repo rather than locally.
@@ -204,23 +215,35 @@ To add or remove a source, edit the `THIRD_PARTY_SKILLS` array near the top of
 that repo, `"owner/repo::skill-name"` for one skill. Commenting a line out disables it without
 losing the recipe.
 
-**Name collisions — yours wins, silently.** Both systems drop symlinks into the same flat
-`~/.claude/skills/`, and the script installs third-party **first**, then links yours. If an
-upstream package ever ships a skill named `graphing-guide`, `npx` points that name at
-`~/.agents/skills/graphing-guide`; the script then sees a symlink aimed somewhere other than the
-clone and takes it back, logging:
+**Name collisions — and which side wins depends on the install mode.** Everything lands in the
+same flat `~/.claude/skills/`, and the script installs third-party **first**, then links yours.
+So if an upstream package ever ships a skill named `graphing-guide`:
 
-```
-[install-skills] Relinking graphing-guide (was pointing elsewhere)
-```
+| Their install mode | What the script does | Who wins |
+|---|---|---|
+| `--all` (symlink) | sees a symlink aimed outside the clone, takes the name back → logs `Relinking graphing-guide (was pointing elsewhere)` | **you** — theirs becomes unreachable |
+| `--skill` (copy) | sees a real folder, refuses to touch it → logs `exists and is NOT a symlink` | **them** — *your* skill is silently not linked |
 
-So *your* version stays active and the third-party one becomes unreachable — losing a skill you
-did not write, which is the better failure of the two, but a silent one. **A `Relinking` line on a
-run where you changed nothing is the tell.** On a normal re-run every line should read `OK: ...
-already linked`.
+The second row is the dangerous one: you lose your own skill, and `graphing-guide` still appears
+in the listing, so nothing looks wrong. **Both tells are in the script's output.** On a healthy
+re-run where you changed nothing, every personal-skill line reads `OK: ... already linked` — an
+unexpected `Relinking` or any `NOT a symlink` line means read the whole log.
 
-The script's prune step only deletes links whose target points into the clone, so third-party
-links are never touched by it.
+The prune step only deletes links whose target points into the clone, so third-party entries are
+never collateral damage.
+
+**Do not trust `npx`'s exit code.** It attempts every agent it knows about and returns non-zero
+when one of them (`Eve`, `PromptScript`) rejects a global install — even when Claude Code
+succeeded. A single-skill install of 8 skills reported "Failed to install 16" with zero actual
+Claude Code failures. The scripts therefore verify the *outcome* — did the folder land in
+`~/.claude/skills`? — rather than the exit code.
+
+**Editing a third-party skill is not possible in place, in either mode.** `~/.agents/skills` is
+not a git repo (`git add` there fails with *not a git repository*), and a copy in
+`~/.claude/skills` is owned by the CLI and will be overwritten by `npx skills update`. Use `pwd -P`
+to see which room you are actually standing in. If you need changes, fork the upstream repo and
+point `THIRD_PARTY_SKILLS` at your fork, or vendor a copy into this repo under your own name and
+accept that you now own re-syncing it forever.
 
 Audit which system owns what:
 
@@ -248,7 +271,8 @@ npx skills list                           # what the CLI thinks it manages
 | | Source of truth | Lives on a machine as | Update mechanism |
 |---|---|---|---|
 | Personal skills / code | GitHub repo (`lior-claude-skills`) | Symlink/junction in `~/.claude/skills` | `git pull` |
-| Third-party skills | Upstream GitHub repo (e.g. `designer-skills`) | `~/.agents/skills/<name>`, symlinked into `~/.claude/skills` | `npx skills update` |
+| Third-party, `--all` | Upstream GitHub repo (e.g. `designer-skills`) | `~/.agents/skills/<name>`, symlinked in | `npx skills update` |
+| Third-party, `--skill` | Upstream GitHub repo (e.g. `scientific-agent-skills`) | a real folder copied into `~/.claude/skills` | `npx skills update` |
 | claude.ai skills | Same personal GitHub repo | Zip upload | Manual, per update |
 | Documents | Google Drive | Synced folder (sibling, not nested) | Automatic Drive sync |
 
@@ -287,6 +311,12 @@ all, so a skill that exists only as an empty directory will never reach another 
 
 **`npx skills add` fails** — usually no network access on that machine, or Node.js is not
 installed. The script logs it and keeps going rather than aborting the whole install.
+
+**`Failed to install N` from the third-party step, but the skills are actually there** — `npx`
+tried agents beyond Claude Code (`Eve`, `PromptScript`) that reject global installs, and returned
+non-zero. The scripts now check whether the folder landed instead of reading the exit code, and log
+`OK: <name> present in ...`. If you see the older exit-code message, the script is out of date —
+pull.
 
 **Authentication prompts or 403 on push** — HTTPS credentials are not cached. `gh auth login`,
 choosing GitHub.com → HTTPS → browser, is the shortest path.

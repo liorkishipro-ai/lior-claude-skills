@@ -38,6 +38,21 @@ mkdir -p "$SKILLS_DIR"
 # "owner/repo::skill-name" installs just one skill from a multi-skill repo.
 THIRD_PARTY_SKILLS=(
   "julianoczkowski/designer-skills"
+
+  # K-Dense-AI/scientific-agent-skills ships 163 skills. Only a targeted subset is
+  # installed: 163 descriptions would load into every session's context, and most
+  # (astropy, cirq, diffdock) are irrelevant here.
+  # DELIBERATELY EXCLUDED: matplotlib, seaborn, scientific-visualization. They trigger
+  # on plotting and would compete with graphing-guide, which owns the house style and
+  # the Hebrew RTL rules. Do not add them without re-reading that decision.
+  "K-Dense-AI/scientific-agent-skills::neurokit2"
+  "K-Dense-AI/scientific-agent-skills::statistical-analysis"
+  "K-Dense-AI/scientific-agent-skills::statistical-power"
+  "K-Dense-AI/scientific-agent-skills::statsmodels"
+  "K-Dense-AI/scientific-agent-skills::scikit-learn"
+  "K-Dense-AI/scientific-agent-skills::scientific-writing"
+  "K-Dense-AI/scientific-agent-skills::citation-management"
+  "K-Dense-AI/scientific-agent-skills::umap-learn"
 )
 # ----------------------------------------------------------------------
 
@@ -49,8 +64,16 @@ else
     if [[ "$entry" == *"::"* ]]; then
       skill_name="${entry##*::}"
       log "Installing '$skill_name' from $repo (npx skills)"
-      if ! npx -y skills add "$repo" --skill "$skill_name" -a claude-code -g -y; then
-        err "Failed to install $skill_name from $repo — continuing"
+      # Do NOT trust npx's exit code. It attempts every agent it knows about and
+      # returns non-zero when one of them (Eve, PromptScript) rejects a global
+      # install, even though Claude Code succeeded. Trusting it meant printing
+      # "Failed to install" on every run, which hides a real failure in noise.
+      # Verify the outcome instead: did the skill actually land?
+      npx -y skills add "$repo" --skill "$skill_name" -a claude-code -g -y || true
+      if [ -e "$SKILLS_DIR/$skill_name" ]; then
+        log "OK: $skill_name present in $SKILLS_DIR"
+      else
+        err "$skill_name did NOT land in $SKILLS_DIR after install — investigate"
       fi
     else
       log "Installing all skills from $repo (npx skills)"
