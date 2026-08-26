@@ -37,7 +37,7 @@ mkdir -p "$SKILLS_DIR"
 # "owner/repo" installs every skill in that repo.
 # "owner/repo::skill-name" installs just one skill from a multi-skill repo.
 THIRD_PARTY_SKILLS=(
-  # "julianoczkowski/designer-skills"   # re-enable once base setup is verified
+  "julianoczkowski/designer-skills"
 )
 # ----------------------------------------------------------------------
 

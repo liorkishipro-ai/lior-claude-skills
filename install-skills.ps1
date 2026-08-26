@@ -38,7 +38,7 @@ New-Item -ItemType Directory -Force -Path $SkillsDir | Out-Null
 # "owner/repo" installs every skill in that repo.
 # "owner/repo::skill-name" installs just one skill from a multi-skill repo.
 $ThirdPartySkills = @(
-    # "julianoczkowski/designer-skills"   # re-enable once base setup is verified
+    "julianoczkowski/designer-skills"
 )
 # ----------------------------------------------------------------------
 

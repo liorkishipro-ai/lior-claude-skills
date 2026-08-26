@@ -13,7 +13,9 @@ after it is background and troubleshooting.
 | Repo | `https://github.com/liorkishipro-ai/lior-claude-skills.git` |
 | GitHub account | `liorkishipro-ai`, HTTPS (not SSH) |
 | Clone location | `~/lior-claude-skills` |
-| Skills load from | `~/.claude/skills` (symlinks/junctions into the clone) |
+| Skills load from | `~/.claude/skills` — **everything here is a symlink**, never real content |
+| Your skills' real home | `~/lior-claude-skills/<skill>/` (the clone) |
+| Third-party skills' real home | `~/.agents/skills/<skill>/` (managed by the `skills` CLI) |
 | Authoritative scripts | `install-skills.sh` (mac/linux), `install-skills.ps1` (windows) — in the repo root |
 | Prerequisites | `git`; `gh` for painless auth; Node.js/`npx` only if you want third-party skills |
 
@@ -79,8 +81,15 @@ Confirm:
 ls -la ~/.claude/skills
 ```
 
-Personal skills appear as **symlinks** (mac/linux) or **junctions** (windows) pointing back into
-the clone. Third-party skills appear as **plain folders**, managed separately by the `skills` CLI.
+Every entry is a symlink (junction on windows); what distinguishes them is the **target**:
+
+```
+graphing-guide  -> /Users/you/lior-claude-skills/graphing-guide     # yours, absolute, into the clone
+design-review   -> ../../.agents/skills/design-review               # third-party, relative, into ~/.agents
+```
+
+Read the arrow, not the name. That one line tells you which system owns a skill and therefore how
+to update it.
 
 > `install-skills.ps1` has not yet been executed on a real Windows machine. The first lab PC is
 > its first true test — expect to debug it, and fix it in the repo rather than locally.
@@ -195,14 +204,29 @@ To add or remove a source, edit the `THIRD_PARTY_SKILLS` array near the top of
 that repo, `"owner/repo::skill-name"` for one skill. Commenting a line out disables it without
 losing the recipe.
 
-**Name collisions:** third-party skills and your own land in the same flat `~/.claude/skills/`
-folder, and the script installs third-party **first**. If an upstream package ships a skill named
-`graphing-guide`, it becomes a plain folder, and the script then refuses to overwrite it — so
-*your* `graphing-guide` silently stops being the active one. After adding a new third-party
-source, always confirm your own skills are still symlinks:
+**Name collisions — yours wins, silently.** Both systems drop symlinks into the same flat
+`~/.claude/skills/`, and the script installs third-party **first**, then links yours. If an
+upstream package ever ships a skill named `graphing-guide`, `npx` points that name at
+`~/.agents/skills/graphing-guide`; the script then sees a symlink aimed somewhere other than the
+clone and takes it back, logging:
+
+```
+[install-skills] Relinking graphing-guide (was pointing elsewhere)
+```
+
+So *your* version stays active and the third-party one becomes unreachable — losing a skill you
+did not write, which is the better failure of the two, but a silent one. **A `Relinking` line on a
+run where you changed nothing is the tell.** On a normal re-run every line should read `OK: ...
+already linked`.
+
+The script's prune step only deletes links whose target points into the clone, so third-party
+links are never touched by it.
+
+Audit which system owns what:
 
 ```bash
-ls -la ~/.claude/skills | grep '\->'
+ls -la ~/.claude/skills | grep '\->'      # read the targets
+npx skills list                           # what the CLI thinks it manages
 ```
 
 ---
@@ -224,7 +248,7 @@ ls -la ~/.claude/skills | grep '\->'
 | | Source of truth | Lives on a machine as | Update mechanism |
 |---|---|---|---|
 | Personal skills / code | GitHub repo (`lior-claude-skills`) | Symlink/junction in `~/.claude/skills` | `git pull` |
-| Third-party skills | Upstream GitHub repo (e.g. `designer-skills`) | Plain folder in `~/.claude/skills` | `npx skills update` |
+| Third-party skills | Upstream GitHub repo (e.g. `designer-skills`) | `~/.agents/skills/<name>`, symlinked into `~/.claude/skills` | `npx skills update` |
 | claude.ai skills | Same personal GitHub repo | Zip upload | Manual, per update |
 | Documents | Google Drive | Synced folder (sibling, not nested) | Automatic Drive sync |
 
