@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Clones (or updates) the lior-claude-skills repo and symlinks every skill
 # folder into ~/.claude/skills so Claude Code picks them up automatically.
+# Personal skills live at the repo root; vendored third-party skills live in
+# vendor/ — see vendor/vendored_skills_provenance.md for their upstreams and
+# pinned commits. Git is the only mechanism: no Node.js required.
 # Safe to re-run any time — on login, after a reboot, on a freshly imaged
 # lab PC, whenever. It only ever touches symlinks it created.
 
@@ -32,67 +35,18 @@ fi
 
 mkdir -p "$SKILLS_DIR"
 
-# ---- Third-party skill packages, installed via the `skills` CLI ----
-# https://github.com/vercel-labs/skills — one entry per line.
-# "owner/repo" installs every skill in that repo.
-# "owner/repo::skill-name" installs just one skill from a multi-skill repo.
-THIRD_PARTY_SKILLS=(
-  "julianoczkowski/designer-skills"
-
-  # K-Dense-AI/scientific-agent-skills ships 163 skills. Only a targeted subset is
-  # installed: 163 descriptions would load into every session's context, and most
-  # (astropy, cirq, diffdock) are irrelevant here.
-  # DELIBERATELY EXCLUDED: matplotlib, seaborn, scientific-visualization. They trigger
-  # on plotting and would compete with graphing-guide, which owns the house style and
-  # the Hebrew RTL rules. Do not add them without re-reading that decision.
-  "K-Dense-AI/scientific-agent-skills::neurokit2"
-  "K-Dense-AI/scientific-agent-skills::statistical-analysis"
-  "K-Dense-AI/scientific-agent-skills::statistical-power"
-  "K-Dense-AI/scientific-agent-skills::statsmodels"
-  "K-Dense-AI/scientific-agent-skills::scikit-learn"
-  "K-Dense-AI/scientific-agent-skills::scientific-writing"
-  "K-Dense-AI/scientific-agent-skills::citation-management"
-  "K-Dense-AI/scientific-agent-skills::umap-learn"
-)
-# ----------------------------------------------------------------------
-
-if ! command -v npx >/dev/null 2>&1; then
-  err "npx not found — skipping third-party skills. Install Node.js to enable this."
-else
-  for entry in "${THIRD_PARTY_SKILLS[@]}"; do
-    repo="${entry%%::*}"
-    if [[ "$entry" == *"::"* ]]; then
-      skill_name="${entry##*::}"
-      log "Installing '$skill_name' from $repo (npx skills)"
-      # Do NOT trust npx's exit code. It attempts every agent it knows about and
-      # returns non-zero when one of them (Eve, PromptScript) rejects a global
-      # install, even though Claude Code succeeded. Trusting it meant printing
-      # "Failed to install" on every run, which hides a real failure in noise.
-      # Verify the outcome instead: did the skill actually land?
-      npx -y skills add "$repo" --skill "$skill_name" -a claude-code -g -y || true
-      if [ -e "$SKILLS_DIR/$skill_name" ]; then
-        log "OK: $skill_name present in $SKILLS_DIR"
-      else
-        err "$skill_name did NOT land in $SKILLS_DIR after install — investigate"
-      fi
-    else
-      log "Installing all skills from $repo (npx skills)"
-      if ! npx -y skills add "$repo" --all -a claude-code -g -y; then
-        err "Failed to install skills from $repo — continuing"
-      fi
-    fi
-  done
-fi
-
 expected=""
 
-# Link every valid skill folder found in the repo
-for skill_path in "$CLONE_DIR"/*/; do
+# Link every valid skill folder: personal skills at the repo root, vendored
+# third-party skills under vendor/. Both are plain git-tracked folders, so git
+# is the only mechanism here — no Node.js, no npx, no ~/.agents.
+for skill_path in "$CLONE_DIR"/*/ "$CLONE_DIR"/vendor/*/; do
   [ -d "$skill_path" ] || continue
   skill_name="$(basename "$skill_path")"
 
+  # vendor/ is a container, not a skill; licenses/ holds required licence texts.
   case "$skill_name" in
-    .*|dist|node_modules) continue ;;
+    .*|dist|node_modules|vendor|licenses) continue ;;
   esac
 
   if [ ! -f "${skill_path}SKILL.md" ]; then
