@@ -40,6 +40,8 @@ Ask: **"After this is done, will there ever be a legitimate reason to run the OL
 
 Only proceed past this step for genuine temporary work.
 
+**Exception: Adding a completely new, isolated skill directory.** These are purely additive (can't break existing code) and can go straight to main. No branch needed — just create the skill directory, add it, commit, and push. They don't need Step 3 onwards.
+
 ## Step 3 — Choose the prefix
 
 | Prefix | Use for | Ends in |
