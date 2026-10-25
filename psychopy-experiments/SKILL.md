@@ -1,6 +1,6 @@
 ---
 name: psychopy-experiments
-description: Use when writing, debugging, or reviewing PsychoPy experiment code -- rendering quality (ImageStim/TextStim), layout in height units, RTL/Hebrew text -- and when building the operator-facing setup/launcher GUI -- PyQt6 or tkinter dialogs living in a PsychoPy process, config overrides driven from a window, and how to keep any of it testable with no display. Non-obvious gotchas learned building real experiments. Load before writing or editing stimulus-presentation code, or any operator setup dialog, in PsychoPy.
+description: Use when writing, debugging, or reviewing PsychoPy experiment code -- rendering quality (ImageStim/TextStim), layout in height units, RTL/Hebrew text -- and when building the operator-facing setup/launcher GUI -- PyQt6 or tkinter dialogs living in a PsychoPy process, config overrides driven from a window, and how to keep any of it testable with no display. Also: LSL recording streams that must not lie (an outlet with no source behind it, a stream that stops mid-session), stopping a session safely (the hold-Ctrl+C-3-s quit, the stream-loss safe stop), capturing why a session crashed or froze (faulthandler, an out-of-process sentinel, Windows exit codes, hang dumps), and building an AUTOPILOT into every experiment -- an unattended run that stress-tests the machine first, drives the real session, measures CPU/GPU/memory/disk/frame timing against that machine's baseline, and ends in a pass/fail validation verdict that also runs after every real session. Non-obvious gotchas learned building real experiments. Load before writing or editing stimulus-presentation code, an operator setup dialog, recording/LSL code, quit handling, fault capture, or an autopilot/test harness in PsychoPy.
 ---
 
 # PsychoPy Experiments
@@ -11,7 +11,67 @@ the docs. Each entry: what to do, why the default bites, how to tell if it
 applies. Add a new entry whenever one turns up -- don't let the lesson live
 only in one project's git history.
 
-## Rendering
+## Contents
+
+0. [Validation, validation, validation](#0-validation-validation-validation) -- the rule every section answers to
+1. [Rendering](#1-rendering)
+   - [Always pass `interpolate=True` to `ImageStim`](#always-pass-interpolatetrue-to-imagestim)
+2. [Layout in "height" units](#2-layout-in-height-units)
+   - [`TextStim` needs an explicit `wrapWidth`](#textstim-needs-an-explicit-wrapwidth-or-it-will-eventually-clip)
+   - [RTL text that barely wraps puts the first word last](#rtl-text-that-barely-needs-to-auto-wrap-can-put-the-first-word-on-the-last-line)
+3. [The operator's setup screen: Qt inside a PsychoPy process](#3-the-operators-setup-screen-qt-inside-a-psychopy-process)
+4. [The operator's setup screen: architecture that stays testable](#4-the-operators-setup-screen-architecture-that-stays-testable)
+5. [Recording streams that don't lie](#5-recording-streams-that-dont-lie)
+   - [Never advertise an LSL outlet before its source is open](#never-advertise-an-lsl-outlet-before-its-source-is-open)
+   - [Watch every stream while the session runs](#watch-every-stream-while-the-session-runs)
+6. [Stopping a session safely](#6-stopping-a-session-safely)
+   - [Quit = hold Ctrl+C for 3 seconds](#quit--hold-ctrlc-for-3-seconds)
+   - [Every stop saves everything](#every-stop-saves-everything)
+7. [When a session dies: capture the evidence before you need it](#7-when-a-session-dies-capture-the-evidence-before-you-need-it)
+8. [Autopilot: every experiment can run itself](#8-autopilot-every-experiment-can-run-itself)
+   - [8.1 What it is, and why not SendInput](#81-what-it-is-and-why-not-sendinput)
+   - [8.2 Two files: a generic driver, a thin per-experiment runner](#82-two-files-a-generic-driver-a-thin-per-experiment-runner)
+   - [8.3 Modes](#83-modes)
+   - [8.4 Stress test first: is this machine fit today?](#84-stress-test-first-is-this-machine-fit-today)
+   - [8.5 Machine health during the run](#85-machine-health-during-the-run)
+   - [8.6 The validation verdict](#86-the-validation-verdict)
+   - [8.7 Prove every check can fail](#87-prove-every-check-can-fail)
+   - [8.8 Gotchas](#88-gotchas)
+   - [8.9 Checklist: adding autopilot to a new experiment](#89-checklist-adding-autopilot-to-a-new-experiment)
+9. [Lab machines](#9-lab-machines)
+10. [Reference implementations](#10-reference-implementations)
+
+## 0. Validation, validation, validation
+
+The standing rule of this lab. Every section below is an instance of it.
+
+1. **Nothing is "working" until a check says so.** A run that did not crash is not
+   a run that worked. The evidence is a file on disk with a pass/fail line, not a
+   console that looked fine.
+2. **Every check must be shown to fail.** Reintroduce the bug, unplug the device, kill
+   the process -- and watch the check go red. A check that has never been red is
+   unverified. (On the Emotions console a green test passed over three broken slots;
+   on the fault-capture pass two of eight "obvious" crash recipes tested something
+   else.)
+3. **Missing evidence is a failure, not a pass.** A missing file, a stream with 0
+   samples, a log with no clean-exit line all mean *fail*. A check that cannot run
+   reports `SKIP` with the reason, never `PASS`. (Not the same as a *quiet signal*: a
+   silent participant still produces audio samples. Judge whether samples arrive,
+   never how loud they are -- section 5.)
+4. **Validate at three points**: before the session (pre-flight, and the autopilot's
+   stress test), during it (fault capture, the stream watch, the watchdog), and after
+   it (the verdict, section 8.6 -- after **every** session, real or autopilot). Each
+   catches what the others cannot.
+5. **Exit codes carry the verdict.** Any automated run returns non-zero when any
+   check fails, so a script, CI or a human skimming can't mistake red for green.
+6. **Report the gap honestly.** If something was not tested, say so in the verdict
+   (`SKIP: no EMG hardware`), don't omit the row.
+7. **A person reviews every verdict.** The verdict is evidence for Lior to review, not
+   a decision the code makes alone. After a session, hand the verdict, and the `.xdf`
+   once LabRecorder has written it, to Claude for the full validation pass, and read
+   the result before the next participant. Nothing goes into analysis unreviewed.
+
+## 1. Rendering
 
 ### Always pass `interpolate=True` to `ImageStim`
 
@@ -40,7 +100,7 @@ displays everything at fewer pixels than a real fullscreen session at native
 monitor resolution, which can look "soft" for a reason that has nothing to do
 with `interpolate`.
 
-## Layout in "height" units
+## 2. Layout in "height" units
 
 With `units="height"`, the window's vertical extent is always exactly
 `[-0.5, 0.5]`; the horizontal extent is `[-0.5*aspect, 0.5*aspect]`, where
@@ -119,7 +179,7 @@ stranded word) even when looking right at it. Re-run the scan after ANY edit
 to the text (a shorter/longer translation, a config value, a placeholder
 substitution can each push a line from safely-under to just-over).
 
-## The operator's setup screen: Qt inside a PsychoPy process
+## 3. The operator's setup screen: Qt inside a PsychoPy process
 
 Every experiment eventually grows a launcher window — who is in the room, which
 condition, which blocks run. `psychopy.gui.DlgFromDict` gets you six auto-generated
@@ -239,7 +299,7 @@ Interpolate the winner into the stylesheet. **How to tell it applies**: check th
 font is actually installed rather than assuming — a designed mock-up will happily
 name a font nobody on the lab PC has.
 
-## The operator's setup screen: architecture that stays testable
+## 4. The operator's setup screen: architecture that stays testable
 
 The GUI traps above cost debugging time. These cost *data*, so they matter more.
 
@@ -324,3 +384,551 @@ else on the list needed a monitor.
 **Prove the test can fail.** Reintroduce the bug deliberately and confirm it goes
 red. A smoke test that calls handlers instead of clicking buttons passes while the
 window is broken — verified, on this exact console.
+
+## 5. Recording streams that don't lie
+
+### Never advertise an LSL outlet before its source is open
+
+Found on voiceless_they, 2026-10-22: the HyperX mic was unplugged, the dB meter
+logged `could not open microphone`, and `Audio_Mic` was **still listed in
+LabRecorder**. The code created the audio outlet first ("so LabRecorder lists it")
+and opened the mic second. The outlet lives on regardless of whether anything ever
+pushes into it, so the operator ticks a healthy-looking stream that records **0
+samples** -- found only when the XDF is opened, after the participant has gone.
+
+**Fix**: open the source, then create the outlet, and only if the source opened. A
+failed device must mean *no stream*, plus a loud console line, plus the failure in
+`session_info.json`:
+
+```python
+mic_open = db.start()
+if mic_open and audio_lsl_wanted:
+    db.audio_outlet = make_audio_outlet(...)
+elif audio_lsl_wanted:
+    print("[MIC] WARNING: microphone did not open - NO Audio_Mic LSL stream")
+```
+
+A missing stream is caught at a glance in LabRecorder; an empty one is not. The same
+rule applies to every device-backed outlet (camera frames, eye tracker, a
+response box): **the outlet's existence must mean the device is delivering.**
+
+The camera had the same bug, in a harder form: its outlet must exist before LabRecorder
+starts, but the camera opens in the background (~12 s) and can fail after that. Fix:
+when `arm()` finds the camera never opened, **withdraw** the outlet (drop the last
+reference to the `StreamOutlet`) and print it. A stream that disappears is still far
+easier to notice than one that stays empty.
+
+**The validator must not trust the outlet flag either.** The first version of the
+verdict checked `audio_lsl_active` and passed the very session that had the dead mic.
+Check the outlet **and** the device behind it (`mic_device` set, `mic_error` empty).
+
+**How to validate it**: the post-session check "every expected stream exists AND
+has > 0 samples" (section 8.6). Prove it red by running once with the device
+unplugged.
+
+### Watch every stream while the session runs
+
+The reverse case: a device that opens and then dies mid-session (mic cable pulled at
+minute 20, the DAU dropping off Wi-Fi) leaves an outlet that simply stops receiving.
+Nothing crashes, so nothing else notices. Every experiment runs a **stream watch**
+for the whole session:
+
+| gap (no samples arriving) | action |
+|---|---|
+| > 2 s | **flag**: console line, `stream_gap_detected` / `stream_gap` events in the log (stream, length), a row in the verdict. The session **continues** -- a flag never quits. |
+| > 10 s | **safe stop**: end the session the same way a quit does (section 6), status `stopped_stream_lost`, naming the stream. Ten seconds of a dead stream means the rest of the session would be unusable anyway. |
+
+Both limits live in the config, per stream.
+
+**Watch sample arrival, never signal level.** A silent participant is not a dead
+mic: the mic still delivers a block of (near-zero) samples every ~23 ms. The watch
+counts *samples arrived*, so silence never flags and never stops a session. The only
+thing that trips it is the device or the stream actually going away.
+
+What to watch, and how:
+
+- **Our own outlets** (mic, video frames): a counter that grows on arrival (audio
+  blocks processed, frames written); the watch compares counts between checks.
+- **External streams** (`XtrodesEMG`, `XtrodesIMU` from the recorder): open a `pylsl`
+  inlet per stream in a background thread that only counts the samples `pull_chunk`
+  returns.
+- **Never on the frame path.** Inlet threads only *count*; the main loop calls
+  `watch.check()` between flips (the same place it checks the quit gesture), which
+  logs and, past the stop limit, raises `StreamLost` on the main thread. A thread must
+  never close the window or the files itself.
+- **Count where every sample passes.** Put the increment in the one function every
+  block goes through, not in the device callback: the first version counted in the
+  callback, and the test harness, which feeds blocks without it, was promptly "lost"
+  after 10 s.
+- Arm each stream as *just seen* when it is registered (after the camera arms), so a
+  stream dead from the start is also lost after `stop_s`. Streams that are not there at
+  all (EMG off the network, LSL off) are listed as **not watched**, with the reason, and
+  the verdict decides whether that is a FAIL.
+- Log the events as instant markers (`stream_gap_detected` at the flag, `stream_gap`
+  with `gap_duration_s` when samples resume, `stream_lost` at the stop), and add the
+  names to the project's marker vocabulary.
+
+**How to validate it**: pause the EMG recorder for 5 s → one flag, the session goes
+on. Pause it for 11 s → safe stop, all files intact, status `stopped_stream_lost`.
+Sit silent for a whole block → nothing.
+
+## 6. Stopping a session safely
+
+### Quit = hold Ctrl+C for 3 seconds
+
+Single-key quits (Escape) end sessions by accident: a brush of the keyboard, a
+participant reaching for a tissue. And under autopilot, Escape cannot work at all,
+because the autopilot owns the keyboard API (section 8.8). So in **every**
+experiment, autopilot or not, the quit gesture is: **hold Ctrl+C in the PsychoPy
+window for 3 seconds.** A single key does nothing.
+
+Read it from **pyglet's key state**, not from PsychoPy's keyboard API. That one
+choice makes it immune to the autopilot (which patches only the PsychoPy APIs) and
+gives "is it still held" directly:
+
+```python
+from pyglet.window import key
+held = key.KeyStateHandler()
+win.winHandle.push_handlers(held)          # once, after the window opens
+
+def quit_held(state, now, hold_s=3.0):     # call once per frame, between flips
+    down = (held[key.LCTRL] or held[key.RCTRL]) and held[key.C]
+    if not down:
+        state["since"] = None
+        return False
+    state["since"] = state["since"] or now
+    return now - state["since"] >= hold_s
+```
+
+- Print a console countdown while it is held (`quit: hold 2 s more`), so the operator
+  knows it is working. Show nothing to the participant.
+- Inside the PsychoPy window, Ctrl+C is just two keys -- not a signal. **Ctrl+C in
+  the console** is still the emergency stop: instant, no hold, exits via
+  `KeyboardInterrupt` (or `0xC000013A` if uncaught, section 7).
+- Every polling loop must call it, including waits that poll no keys (fixations, a
+  fixed-duration rest). Otherwise the quit dead-zones exactly where an operator most
+  wants to stop.
+- **Verify on each rig** that pyglet's key state updates while PsychoPy's keyboard
+  backend (psychtoolbox) is in use: `win.flip()` dispatches the window's events, but
+  check it.
+- **Fallback:** if the window has no pyglet `winHandle` (another backend, a mocked
+  window in tests), fall back to the old single quit key **with a warning at start**,
+  rather than leaving the session with no way to quit.
+- Count the countdown down with `ceil` (3, 2, 1). Rounding prints "3 s more" twice --
+  caught by the test, not by eye.
+
+**How to validate it**: hold for 2.9 s → nothing. Hold 3 s → quit. Tap Escape →
+nothing. Hold during a fixation → quit. Hold during an autopilot run → quit.
+
+### Every stop saves everything
+
+A quit, a stream-loss safe stop and a normal end take the **same** exit path: mark
+the open events cancelled, write progress (`status` = `aborted` / `stopped_stream_lost`
+/ `completed`, last event, block, trial), flush and close every log, stop the camera
+(so the mp4 is finalised), close LSL outlets, write the fault-capture clean-exit line
+last. One path means one thing to test. The verdict then runs on whatever was saved.
+
+## 7. When a session dies: capture the evidence *before* you need it
+
+A long session that dies at minute 49 is investigated from whatever was written to
+disk. If nothing was, you get a day of guessing, and Windows will usually not help:
+on one lab PC a real access violation left **no** Event 1000, no WER report and no
+dump. The Emotions experiment learned this on 2026-10-19, when two rigs failed in
+the same block for two different reasons and neither left evidence. Arm all of the
+below for every real session; none of it touches the frame path.
+
+### Two layers, because each one is blind where the other sees
+
+| layer | runs | catches | blind to |
+|---|---|---|---|
+| **in-process**: `<base>.faults` | inside the experiment | native-crash Python stack (`faulthandler`, `all_threads=True`); dead background threads (`threading.excepthook`); errors in `__del__`/GC (`sys.unraisablehook`); a clean-exit line written last | how the process ended; C stacks; anything after it is killed; machine-wide stalls |
+| **out-of-process**: a sentinel | a separate, detached python | exit code; "Not Responding" (`IsHungAppWindow`, polled 1 s); native minidumps of every thread while hung; per-second CPU/disk/memory (`typeperf`); the Windows event log for the session; a one-line verdict | Python-level stacks |
+
+Start the sentinel with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` (try
+`| CREATE_BREAKAWAY_FROM_JOB` first, fall back if the job refuses) and stdio on
+`DEVNULL`. Then it survives Ctrl+C, a closed console, or the experiment being
+killed. Open a handle to the experiment at startup and `WaitForSingleObject` on
+it, so the exit is never missed. Tee stdout/stderr into the session folder as well:
+the console is otherwise the only record of what the operator saw.
+
+### Exit codes, calibrated on a real rig (Windows 11, Python 3.10)
+
+| code | meaning |
+|---|---|
+| `0` | normal exit. **Also Ctrl+C, if the launcher catches `KeyboardInterrupt`**: read `end_reason` from the session log instead |
+| `1` | `taskkill /F` / Task Manager **or** an uncaught Python exception (tell them apart by whether the window was hung first) |
+| `3` | `abort()`, or the C runtime's `raise(SIGSEGV)` |
+| `0xC0000005` | real access violation (native crash) |
+| `0xC000013A` | the console window was closed (or a Ctrl+C Python did not catch) |
+| `0xCFFFFFFF` | hung window closed via X → "Python is not responding" → **Close the program** |
+
+The last row also logs Application Event **1002** ("stopped interacting with Windows
+and was closed") and a 1001 `AppHangB1`. `taskkill` and `abort()` log nothing. So
+a dead freeze **without** a 1002 was most likely ended through Task Manager.
+
+### Gotchas that cost a test cycle each
+
+- **`faulthandler` logs exceptions that were then handled.** On Windows it hooks
+  first-chance SEH, so `.faults` can say `Windows fatal exception: access violation`
+  in a process that went on to exit normally. Never call it a crash on `.faults`
+  alone; pair it with the exit code.
+- **`ctypes.string_at(0)` is not a crash test**: ctypes catches the fault and raises
+  `OSError` (exit 1). **`faulthandler._sigsegv()` is not one either** on Windows: it
+  only calls `raise(SIGSEGV)` (exit 3). A real `0xC0000005` needs a fault outside
+  ctypes' guard, e.g. `kernel32.CreateThread(None, 0, c_void_p(0), None, 0, None)`.
+- **A child of a shell that ignores Ctrl+C inherits the ignore flag** and never sees
+  `CTRL_C_EVENT`. A test that sends one must call
+  `kernel32.SetConsoleCtrlHandler(None, False)` in the child first.
+- **`IsHungAppWindow` needs ~5 s without message pumping** before it reports hung.
+  `win.flip()` pumps, so a healthy PsychoPy loop never trips it. Arm the dump at
+  ≥ 25 s hung. Writing a 0.5 MB `MiniDumpNormal | WithThreadInfo |
+  WithUnloadedModules | WithHandleData` dump paused the target 0.6–1.5 s.
+- **`typeperf \Process(python*)\...` expands the wildcard once, at start.**
+  Processes started later are not logged. Start it after the processes you care
+  about. A killed `typeperf` keeps every line it wrote.
+- **Python block-buffers stdout when it is not a terminal** (pipes, IDE panels, a
+  tee). `stream.reconfigure(line_buffering=True)` on both streams, first thing, or
+  the console lags the session by minutes.
+- **An operator abort is not a crash, and the files must say which.** voiceless_they,
+  2026-10-22: a quit at 30 s gave exit `0`, `.faults` = only `=== clean exit ===`,
+  the sentinel's `progress … end_reason=aborted`, and an `abort` event with note
+  `quit key` in `_events.csv`. Read them together; no single file tells you.
+
+### Reading a hang dump
+
+WinDbg (`winget install Microsoft.WinDbg`; nothing to do with conda) ships `cdb`:
+
+```powershell
+& "C:\Program Files\WindowsApps\Microsoft.WinDbg_<ver>_x64__8wekyb3d8bbwe\amd64\cdb.exe" `
+  -z <base>.hang1.dmp -c "~*kc 20; q"
+```
+
+The frozen main thread reads bottom-up from `python310!_PyEval_EvalFrameDefault`
+into whatever C call it is stuck in: exactly what `faulthandler` cannot show. Compare
+`hang1` with `hang2` (taken 60 s later): identical stacks mean a true deadlock, and
+moving stacks mean a stall that is still running.
+
+### Prove it before trusting it
+
+Run every ending on purpose before a pilot and check the files say what happened:
+clean, freeze + kill, real segfault, abort, background-thread exception, freeze
+closed via "Close the program", Ctrl+C, console closed. On the first pass, two of
+the eight "obvious" recipes silently tested something else: the segfault (twice)
+and Ctrl+C.
+
+
+## 8. Autopilot: every experiment can run itself
+
+**Recommended for every experiment built with this skill -- and in this lab we always
+build it.** A human clicking through a 50-minute session to see whether it survives
+trial 16 is slow, unrepeatable and tests the human as much as the code. The
+autopilot first checks the machine is fit (8.4), then drives the *real* session --
+same code path, same stimuli, same recording, same fault capture -- with nobody at
+the keyboard, measures the machine while it does, and ends in a pass/fail verdict.
+
+### 8.1 What it is, and why not SendInput
+
+`psychopy_autopilot.py` patches PsychoPy's key APIs (`event.getKeys`,
+`event.waitKeys`, `hardware.keyboard.Keyboard.getKeys/waitKeys`) so a script that
+polls for keys gets synthetic presses. The key is inferred from the `keyList` the
+script itself asks for: a continue key on instruction screens, a random in-range
+digit then a confirm on rating screens. Nothing about any experiment is hard-coded.
+
+Why not OS-level injection (SendInput, pyautogui): it lands only in the window that
+has focus, which a fullscreen PsychoPy window fights over, and it cannot be
+attributed to one physical keyboard. Patching at the PsychoPy boundary is
+focus-independent, works windowed or fullscreen, and exercises the script's real
+polling path rather than a mock of it.
+
+What you get for free, because every poll flows through one place:
+
+- `autopilot_<ts>_<tag>.jsonl` -- one JSON line per armed key and press, flushed per
+  write: the last lines name the screen a dead run died on.
+- a **watchdog** that dumps every thread's stack into the session's `.faults` when
+  the script stops polling for `hang_timeout` seconds: a freeze caught in the act.
+
+### 8.2 Two files: a generic driver, a thin per-experiment runner
+
+| file | owns | never contains |
+|---|---|---|
+| `psychopy_autopilot.py` (generic, vendored unchanged into each project) | key patching, key policy, trace, watchdog, `--selftest` | anything about one experiment |
+| `run_autopilot_session.py` (per experiment) | skipping the setup GUI, the throwaway output folder, mode flags, the hardware gate, calling the experiment's real `main()` | key logic, stimulus logic |
+
+The runner's rules:
+
+1. **Skip the setup window**, never click it: pass the experiment the same argv the
+   window would have produced (`--participant … --session …`). Nothing can click a
+   dialog when nobody is there.
+2. **Throwaway identity**: participant `AUTOPILOT` (or `99`), pilot folder, and
+   `notes="automated unattended run -- NOT REAL DATA"` in `session_info.json`. An
+   autopilot run must be impossible to mistake for data.
+3. **Stress test first** (8.4). A machine that fails it is not used for the run.
+4. **Call the real `main()`**, in-process, so the real fault capture arms itself
+   exactly as in a live session.
+5. **A human answers the hardware gate, before `engage()`.** The autopilot must never
+   vouch for hardware it can't see (recorder streaming, LabRecorder recording).
+6. **End with the verdict** (8.6) and return its exit code.
+
+### 8.3 Modes
+
+| flag | what runs | use |
+|---|---|---|
+| *(none)* | stress test, then full session, real pacing, no LSL/camera/mic | does the task itself survive end to end? |
+| `--quick` | skip calibration + practice | harness check |
+| `--fast` | presses after 50–150 ms instead of human pace | smoke test; **not** valid for timing or crash-repro |
+| `--windowed` | a window instead of fullscreen | while you keep working; **not** valid for frame timing |
+| `--hardware` | LSL, mic, camera, fullscreen, human gate first | full rehearsal on the real rig |
+| `--stress-only` | the stress test (8.4) and nothing else | is this machine fit today? |
+| `--baseline` | the stress test, saved as this machine's new baseline | first run on a machine, or after a hardware/driver change |
+| `--seed N` | reproducible key choices and delays | rerun the exact same run |
+
+**A crash-repro run must match the session it reproduces**: full counts, real
+pacing, camera on, fullscreen. `--fast`/`--quick`/`--windowed` change exactly the
+timing and load a crash may depend on.
+
+### 8.4 Stress test first: is this machine fit today?
+
+The first thing every autopilot run does, before any session screen: about 60 s of
+synthetic load that looks like the session -- the heaviest screen drawn every frame,
+fullscreen, with the camera and LSL outlets running as the config has them. It
+measures the same metrics as 8.5 and compares them with **this machine's
+baseline**.
+
+**Thresholds come from the machine, not from a guess.** Specs alone can't say how
+many frames a rig will drop; only a measurement can. So:
+
+1. On each lab machine, run `--baseline` once, freshly restarted, nothing else open.
+   It writes `machine_baselines/<HOSTNAME>.json`: the fingerprint (section 9) plus
+   the stress-test numbers.
+2. Every later stress test is judged **against that file**.
+3. Re-baseline after a hardware change, a GPU-driver update, or a Windows feature
+   update -- the fingerprint check below makes that visible.
+
+Verdict of the stress test:
+
+| result | meaning | action |
+|---|---|---|
+| `FIT` | within the baseline's margins | run |
+| `DEGRADED` | clearly worse than its own baseline (provisional: dropped frames > 2× baseline, or CPU/GPU p95 > baseline + 20 points, or free RAM < half of baseline) | **restart the computer**, then run the stress test again |
+| `UNFIT` | an absolute floor broken: free RAM < 1 GB, or > 1 % dropped frames | do not run a participant on it |
+| `NO BASELINE` | no `<HOSTNAME>.json` yet | run `--baseline` first; the numbers are reported but not judged |
+
+Also report, without judging: **uptime** (a long uptime is the usual suspect when a
+machine is `DEGRADED`), the power plan (anything other than *High performance* is a
+classic dropped-frame cause), and a **fingerprint mismatch** (different GPU driver,
+refresh rate or display than the baseline was measured on → re-baseline).
+
+The margins above are provisional. Tighten or loosen them once two or three
+baselines and real sessions exist per machine.
+
+Learned on the first real run (voiceless_they, 2026-10-25), each one a wrong verdict:
+
+- **The stress load must be the experiment's own code.** The first version drew a
+  hand-made screen (wrong pronoun, invented layout) in its own loop. It neither looked
+  like the session nor loaded the machine like it, and its loop had **no quit check**,
+  so holding Ctrl+C did nothing. Drive the real presenter on real trials
+  (`presenter.run_condition(...)`); the quit gesture, layout and load then come free.
+- **Compare like with like, or don't compare.** The baseline was taken with nothing
+  running; the stress test before a `--hardware` run had the EMG recorder and
+  LabRecorder running. CPU doubled, frames dropped, and a machine restarted 1 h earlier
+  was called DEGRADED with "restart the computer". Record which recording programs ran
+  (`recording_stack`) and a `stress_version`; when either differs from the baseline the
+  verdict is `NO BASELINE` ("not comparable -- re-baseline"), never DEGRADED. Take the
+  baseline **under session conditions**: freshly restarted, recorder and LabRecorder
+  running. And never advise a restart to a machine that was just restarted.
+- **A stress test publishes no LSL streams.** Its camera opened a `Video_Frames`
+  outlet that appeared in LabRecorder while the session's own streams did not exist yet.
+- **Gate LabRecorder only once the session's streams exist.** A gate shown before
+  `main()` asks the operator to tick streams nobody has created (no `Audio_Mic`, no
+  markers). Give `main()` a `before_task(streams)` hook, called after every outlet is
+  open and before the task window covers the console, and list the streams to tick.
+
+### 8.5 Machine health during the run
+
+The sentinel already logs CPU, disk and memory per second. The autopilot run adds the
+two things a stimulus-presentation PC most often runs out of -- GPU and frame budget
+-- and judges all of it against the baseline, the same as 8.4.
+
+| metric | source | verified on lab PC? |
+|---|---|---|
+| CPU % total and per python process | `typeperf \Processor(_Total)\% Processor Time`, `\Process(python*)\% Processor Time` | yes (sentinel) |
+| available memory, python working set | `\Memory\Available MBytes`, `\Process(python*)\Working Set` | yes (sentinel) |
+| disk queue / write rate | `\PhysicalDisk(_Total)\Avg. Disk Queue Length`, `Disk Write Bytes/sec` | yes (sentinel) |
+| GPU 3D engine utilisation | `\GPU Engine(*engtype_3D)\Utilization Percentage` | counter exists on LAB006_NEW (2026-10-22); values not yet checked |
+| GPU memory | `\GPU Adapter Memory(*)\Dedicated Usage`, `\Shared Usage` | counter exists; values not yet checked |
+| frame intervals | PsychoPy `win.recordFrameIntervals = True` → `win.frameIntervals`, `win.nDroppedFrames` | in session_info (`frame_stats`) |
+| marker-to-flip latency | marker LSL time vs flip time in `_events.csv` | to build |
+| memory growth | python working set, first vs last 5 min | to build (leak check) |
+
+### 8.6 The validation verdict
+
+**Every session ends with a verdict: every autopilot run and every real participant
+session.** It is computed from files only, so a crashed experiment still gets one. It
+runs in three stages, each merged into `<prefix>.validation.json`:
+
+| stage | run by | adds |
+|---|---|---|
+| `session_end` | the experiment's `main()`, after everything is written (and after the clean-exit line), printed on the operator console | everything below except the exit code (`SKIP: known only after exit`) |
+| `final` | the sentinel, after it writes its VERDICT (~60 s after exit) | exit code, sentinel VERDICT |
+| `xdf` | `validate_session.py <session> --xdf <file>`, when Lior hands Claude the XDF | the stage-2 checks below |
+
+So a dead mic is caught on the console before the next participant, not at analysis.
+
+```
+PASS  stress test          FIT vs baseline LAB006_NEW (2026-10-22)
+PASS  clean exit           .faults ends with "=== clean exit ===", exit code 0
+PASS  completed            progress.json status = completed
+FAIL  stream Audio_Mic     expected, not published (mic did not open)
+PASS  stream Video_Frames  41 812 samples = 41 812 mp4 frames
+FLAG  stream gaps          XtrodesEMG: 1 gap of 3.4 s at 00:21:07 (session continued)
+SKIP  XDF checks           no .xdf yet -- give it to Claude for stage 2
+FAIL  frames               1.9 % dropped (limit from baseline 0.4 %), worst 71 ms
+PASS  machine              CPU p95 41 %, GPU p95 22 %, min free RAM 9.1 GB
+VERDICT: FAIL (2 failed, 1 flagged, 1 skipped)          exit code 1
+```
+
+`FLAG` is information for the reviewer, not a failure (a 3 s stream gap the session
+survived). `FAIL` sets the exit code.
+
+The checks, in order:
+
+1. **Machine**: stress-test result (autopilot) or fingerprint (real session).
+2. **Process**: exit code 0, `.faults` ends with the clean-exit line, sentinel
+   VERDICT clean, no hang dumps.
+3. **Completion**: `progress.json` status. An autopilot run must be `completed`
+   (nobody quits it on purpose); a real session reports `aborted` /
+   `stopped_stream_lost` as-is for the reviewer.
+4. **Files**: every expected output exists and is non-empty (events, trials,
+   session_info, video, frame index).
+5. **Streams**: every expected stream was published and pushed > 0 samples (section
+   5); every `stream_gap` event listed.
+6. **Trial count**: trials logged = trials in the trial-order file.
+7. **Timing**: frame and latency numbers against the baseline.
+8. **Machine during the run**: CPU/GPU/memory against the baseline.
+
+**Numbers nobody judged are `SKIP`, never `PASS`.** With no baseline, the frame and
+machine rows show their numbers and say "not judged: no baseline" -- only the
+absolute floors (UNFIT) still apply. The first version printed `PASS` next to a
+number it had compared with nothing.
+
+**Stage 2: the XDF, validated by Claude.** LabRecorder writes the `.xdf`; Lior hands
+it to Claude after the session for: every expected stream present with > 0 samples
+and no gaps beyond the flags; mp4 frame count = `Video_Frames` samples; markers in
+`_events.csv` = markers in the XDF; `lsl_json_marker_intervals.py` → 0 lifecycle
+problems. **The XDF must land in the participant's own folder** (the same
+`sub-<id>/` as every other file of that session): the setup window shows that path
+for the operator to paste into LabRecorder, and stage 2 flags an XDF found anywhere
+else.
+
+### 8.7 Prove every check can fail
+
+Before trusting the verdict, make each check go red on purpose, once per experiment
+(and again after any change to the validator):
+
+| check | how to make it fail |
+|---|---|
+| stress test | run it with a second fullscreen video or a CPU burner alongside → `DEGRADED` |
+| clean exit | kill the run from Task Manager mid-session |
+| completion | hold Ctrl+C for 3 s during an autopilot run |
+| stream published | unplug the mic before the start |
+| stream gap flag | pause the EMG recorder for 5 s |
+| stream-loss safe stop | pause the EMG recorder for 11 s |
+| silence is not a gap | sit silent through a whole block → **no** flag |
+| frame/mp4 alignment | truncate a copy of the mp4 and validate against it |
+| markers | delete marker rows from a copy of `_events.csv` |
+| XDF location | save a test XDF outside the participant folder |
+
+Record the date each was last seen red in the experiment's checklist. A check with
+no date is unverified.
+
+### 8.8 Gotchas
+
+- **The autopilot owns PsychoPy's keyboard API.** The patched `Keyboard.getKeys`
+  returns only synthetic keys and never reads the real keyboard, and the policy never
+  sends the quit key. That is why the quit gesture (section 6) reads pyglet's key
+  state instead: it works under autopilot because nothing patches it.
+- **One `.faults` per run.** `engage()` does **not** re-point `faulthandler` when the
+  experiment's fault capture already enabled it (`faulthandler.is_enabled()`). When
+  the experiment's `FaultCapture.arm()` runs *after* `engage()` (voiceless_they: the
+  prefix only exists inside `main()`), it hands its file to the active autopilot
+  (`psychopy_autopilot._active.use_faults_file(fh, path)`), so the watchdog's hang
+  dumps land in the session's `.faults` too. Two details that bit: re-point
+  `faulthandler` to the adopted file *before* closing the autopilot's own (or a crash
+  writes to a closed file), and catch write errors in the watchdog (the adopted file
+  may already be closed at teardown). Both copies (Emotions, voiceless_they) carry
+  this since 2026-10-22; keep them identical.
+- **A flip is a sign of life, not only a key poll.** The watchdog first counted only
+  key polls. Once the quit gesture moved to pyglet's key state, trials read no keys at
+  all, and one clean 22-minute session (exit 0, sentinel CLEAN) got 7 "hang" dumps,
+  one per condition block. `engage()` now patches `visual.Window.flip` to call
+  `alive()`, and a deliberate wait for a human (the console hardware gate) runs inside
+  `with pilot.paused("hardware gate"):`. A real freeze -- no flip, no poll -- is still
+  dumped; a test proves both.
+- **Escape-only polls send nothing.** A quit check like
+  `kb.getKeys(keyList=["escape"])` is filtered out by the policy -- correct, but it
+  means a screen that waits on *only* the quit key hangs, and the watchdog will dump
+  it after `hang_timeout`. That's the watchdog working, not a bug.
+- **Experimenter-only keys get pressed too.** The policy presses whatever the screen
+  asks for, including an experimenter-advance key (`return`). Fine for testing; never
+  ship a design where pressing it at the wrong time corrupts a session.
+- **Ratings are a heuristic.** "Digits plus a confirm key = rating screen". A
+  different keying scheme needs a `Policy` subclass, not edits to the driver.
+- **`--fast` and `--windowed` invalidate timing checks.** The verdict marks
+  frame/latency checks `SKIP (fast/windowed run)` rather than judging them.
+- **`os._exit(code)` at the end of the runner**, after flushing: PsychoPy/pyglet
+  teardown can hang or crash after the session is safely written, and that must not
+  change the verdict's exit code.
+
+### 8.9 Checklist: adding autopilot to a new experiment
+
+1. Vendor `psychopy_autopilot.py` unchanged; run `python psychopy_autopilot.py --selftest`.
+2. Make sure the experiment's `main(argv)` accepts every setup-window choice as a
+   flag (section 4: the window only produces argv).
+3. Implement the hold-Ctrl+C quit (section 6) and the stream watch (section 5).
+4. Write `run_autopilot_session.py` (8.2 rules); copy the voiceless_they one.
+5. `--baseline` on each machine the experiment will run on (section 9).
+6. Run `--quick --fast --windowed` once: the harness works.
+7. Run the default mode once: the task survives end to end.
+8. Run `--hardware` on the rig: the full verdict passes; Claude validates the XDF.
+9. Do 8.7: every check seen red once. Date it in the checklist.
+10. Add the autopilot command to the README.
+
+## 9. Lab machines
+
+Each machine an experiment runs on gets a baseline (8.4). The fingerprint is what
+the baseline was measured on; a mismatch means re-baseline.
+
+| | LAB006_NEW (lab PC "006") | Voiceless Asus laptop |
+|---|---|---|
+| model | Gigabyte Z790 UD AX desktop | *to fingerprint* |
+| CPU | Intel i7-13700, 16 cores / 24 threads | |
+| RAM | 64 GB | |
+| GPU | NVIDIA RTX 4080 (driver 32.0.16.1088) **and** Intel UHD 770 (31.0.101.4577), each reporting a 1920×1080 @ 60 Hz display | |
+| disks | Samsung 980 PRO 1 TB NVMe, Samsung 980 500 GB NVMe, Crucial BX500 2 TB SATA | |
+| OS | Windows 11 Enterprise, build 26300 | |
+| power plan | High performance | |
+| uptime when fingerprinted | 199.6 h (8.3 days), 2026-10-22 | |
+| baseline | *not yet run* | *not yet run* |
+
+On LAB006_NEW, check which GPU drives the participant display: two adapters each
+report an active 1920×1080 display. A PsychoPy window on the integrated UHD 770 is a
+dropped-frame risk the RTX 4080 would not have [not yet verified which one it is].
+The fingerprint should record the adapter behind the experiment window, not just the
+list of adapters.
+
+## 10. Reference implementations
+
+| what | Emotions | voiceless_they |
+|---|---|---|
+| generic autopilot driver | `experimental_scripts/tools/psychopy_autopilot.py` | `psychopy_autopilot.py` (vendored copy) |
+| per-experiment runner | `experimental_scripts/tools/run_autopilot_session.py` | `run_autopilot_session.py` |
+| in-process fault capture | `run_emotions_lsl.start_fault_capture()` | `fault_capture.py` (`FaultCapture`) |
+| out-of-process sentinel | `experimental_scripts/tools/session_sentinel.py` | `session_sentinel.py` |
+| fault-capture tests | `tools/test_fault_capture.py` | `tests/test_fault_capture.py` |
+| setup console + pre-flight | Emotions setup console | `setup_console.py`, `setup_dialog.py`, `preflight_checks.py` |
+| outlet only after source opens | — | `voiceless_they_experiment_run.py` (mic), `video_recording.VideoRecording.arm` (camera withdrawal) |
+| hold-Ctrl+C quit, stream watch | — | `session_guards.py` (`QuitGesture`, `StreamWatch`); wired in `LivePresenter._guard()` |
+| fingerprint, stress test, baselines | — | `machine_health.py`, `machine_baselines/<HOST>.json` |
+| validation verdict | — | `validate_session.py` (stages `session_end`, `final`, `xdf`) |
+| tests (incl. deliberate mutations) | — | `tests/test_session_guards.py`, `test_guards_live.py`, `test_validate_session.py`, `test_machine_health.py`, `test_autopilot.py` |
+| not built yet | — | marker-to-flip latency check; memory-growth (leak) check; recording the adapter behind the experiment window |
