@@ -17,6 +17,11 @@ hoping.
 **The rule: validate after every stage, not just at the end.** If a stage doesn't get
 checked, assume it's broken until proven otherwise.
 
+**Where this starts:** with a session that `data-collection-reliability` has
+accepted (verdict passed, XDF checked). If the problem might be in the recording
+itself (a missing stream, gaps, a crashed session), go back to that skill first:
+no processing step can recover data that was never recorded.
+
 ## Validation protocol — run after every stage
 
 1. **Data integrity** — shape matches expectations; no NaN/Inf; value ranges are sensible

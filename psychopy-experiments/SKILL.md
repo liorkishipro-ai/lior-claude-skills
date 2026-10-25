@@ -1,6 +1,6 @@
 ---
 name: psychopy-experiments
-description: Use when writing, debugging, or reviewing PsychoPy experiment code -- rendering quality (ImageStim/TextStim), layout in height units, RTL/Hebrew text -- and when building the operator-facing setup/launcher GUI -- PyQt6 or tkinter dialogs living in a PsychoPy process, config overrides driven from a window, and how to keep any of it testable with no display. Also: LSL recording streams that must not lie (an outlet with no source behind it, a stream that stops mid-session), stopping a session safely (the hold-Ctrl+C-3-s quit, the stream-loss safe stop), capturing why a session crashed or froze (faulthandler, an out-of-process sentinel, Windows exit codes, hang dumps), and building an AUTOPILOT into every experiment -- an unattended run that stress-tests the machine first, drives the real session, measures CPU/GPU/memory/disk/frame timing against that machine's baseline, and ends in a pass/fail validation verdict that also runs after every real session. Non-obvious gotchas learned building real experiments. Load before writing or editing stimulus-presentation code, an operator setup dialog, recording/LSL code, quit handling, fault capture, or an autopilot/test harness in PsychoPy.
+description: Use when writing, debugging or reviewing PsychoPy experiment code - rendering (ImageStim/TextStim), layout in height units, RTL/Hebrew text - and when building the operator setup GUI (PyQt6/tkinter inside a PsychoPy process, config overrides from a window, testable with no display). Also for building LSL streams that must not lie (no outlet without a source, a stream that stops mid-session), safe stops (hold-Ctrl+C-3-s quit, stream-loss stop), crash/freeze capture (faulthandler, an out-of-process sentinel, hang dumps), and an AUTOPILOT in every experiment - an unattended run that stress-tests the machine, drives the real session, measures it against the machine's baseline, and ends in a pass/fail verdict. Non-obvious gotchas from real experiments. Load before editing stimulus code, a setup dialog, recording/LSL code, quit handling, fault capture or an autopilot. For BUILDING these; to run, rehearse, validate or triage a session, use data-collection-reliability.
 ---
 
 # PsychoPy Experiments
@@ -43,33 +43,28 @@ only in one project's git history.
 
 ## 0. Validation, validation, validation
 
-The standing rule of this lab. Every section below is an instance of it.
+The standing rule of this lab, defined in full in **data-collection-reliability**
+(which also owns how a session is run, checked and triaged). For whoever writes the
+code, it comes down to:
 
-1. **Nothing is "working" until a check says so.** A run that did not crash is not
-   a run that worked. The evidence is a file on disk with a pass/fail line, not a
-   console that looked fine.
-2. **Every check must be shown to fail.** Reintroduce the bug, unplug the device, kill
+1. **Every check must be shown to fail.** Reintroduce the bug, unplug the device, kill
    the process -- and watch the check go red. A check that has never been red is
    unverified. (On the Emotions console a green test passed over three broken slots;
    on the fault-capture pass two of eight "obvious" crash recipes tested something
    else.)
-3. **Missing evidence is a failure, not a pass.** A missing file, a stream with 0
+2. **Missing evidence is a failure, not a pass.** A missing file, a stream with 0
    samples, a log with no clean-exit line all mean *fail*. A check that cannot run
    reports `SKIP` with the reason, never `PASS`. (Not the same as a *quiet signal*: a
    silent participant still produces audio samples. Judge whether samples arrive,
    never how loud they are -- section 5.)
-4. **Validate at three points**: before the session (pre-flight, and the autopilot's
-   stress test), during it (fault capture, the stream watch, the watchdog), and after
-   it (the verdict, section 8.6 -- after **every** session, real or autopilot). Each
-   catches what the others cannot.
-5. **Exit codes carry the verdict.** Any automated run returns non-zero when any
+3. **Exit codes carry the verdict.** Any automated run returns non-zero when any
    check fails, so a script, CI or a human skimming can't mistake red for green.
-6. **Report the gap honestly.** If something was not tested, say so in the verdict
+4. **Report the gap honestly.** If something was not tested, say so in the verdict
    (`SKIP: no EMG hardware`), don't omit the row.
-7. **A person reviews every verdict.** The verdict is evidence for Lior to review, not
-   a decision the code makes alone. After a session, hand the verdict, and the `.xdf`
-   once LabRecorder has written it, to Claude for the full validation pass, and read
-   the result before the next participant. Nothing goes into analysis unreviewed.
+5. **Build for all three points**: before the session (pre-flight, the stress test),
+   during it (fault capture, the stream watch, the watchdog), after it (the verdict,
+   section 8.6). The verdict is evidence for a person to review, never a decision the
+   code makes alone.
 
 ## 1. Rendering
 
@@ -504,7 +499,7 @@ def quit_held(state, now, hold_s=3.0):     # call once per frame, between flips
   knows it is working. Show nothing to the participant.
 - Inside the PsychoPy window, Ctrl+C is just two keys -- not a signal. **Ctrl+C in
   the console** is still the emergency stop: instant, no hold, exits via
-  `KeyboardInterrupt` (or `0xC000013A` if uncaught, section 7).
+  `KeyboardInterrupt` (or `0xC000013A` if uncaught; exit codes in data-collection-reliability, stage 7).
 - Every polling loop must call it, including waits that poll no keys (fixations, a
   fixed-duration rest). Otherwise the quit dead-zones exactly where an operator most
   wants to stop.
@@ -551,27 +546,16 @@ killed. Open a handle to the experiment at startup and `WaitForSingleObject` on
 it, so the exit is never missed. Tee stdout/stderr into the session folder as well:
 the console is otherwise the only record of what the operator saw.
 
-### Exit codes, calibrated on a real rig (Windows 11, Python 3.10)
+### Reading the evidence lives elsewhere
 
-| code | meaning |
-|---|---|
-| `0` | normal exit. **Also Ctrl+C, if the launcher catches `KeyboardInterrupt`**: read `end_reason` from the session log instead |
-| `1` | `taskkill /F` / Task Manager **or** an uncaught Python exception (tell them apart by whether the window was hung first) |
-| `3` | `abort()`, or the C runtime's `raise(SIGSEGV)` |
-| `0xC0000005` | real access violation (native crash) |
-| `0xC000013A` | the console window was closed (or a Ctrl+C Python did not catch) |
-| `0xCFFFFFFF` | hung window closed via X → "Python is not responding" → **Close the program** |
-
-The last row also logs Application Event **1002** ("stopped interacting with Windows
-and was closed") and a 1001 `AppHangB1`. `taskkill` and `abort()` log nothing. So
-a dead freeze **without** a 1002 was most likely ended through Task Manager.
+The sentinel's VERDICT maps exit codes to endings. The calibrated exit-code table, the
+Event 1001/1002 signatures, how to read a hang dump with `cdb`, and the traps in
+reading `.faults` (it logs exceptions that were then handled; an operator abort is
+not a crash) are in **data-collection-reliability**, stage 7, so the person triaging
+a failed session finds them in one place. Build the sentinel against that table.
 
 ### Gotchas that cost a test cycle each
 
-- **`faulthandler` logs exceptions that were then handled.** On Windows it hooks
-  first-chance SEH, so `.faults` can say `Windows fatal exception: access violation`
-  in a process that went on to exit normally. Never call it a crash on `.faults`
-  alone; pair it with the exit code.
 - **`ctypes.string_at(0)` is not a crash test**: ctypes catches the fault and raises
   `OSError` (exit 1). **`faulthandler._sigsegv()` is not one either** on Windows: it
   only calls `raise(SIGSEGV)` (exit 3). A real `0xC0000005` needs a fault outside
@@ -589,24 +573,9 @@ a dead freeze **without** a 1002 was most likely ended through Task Manager.
 - **Python block-buffers stdout when it is not a terminal** (pipes, IDE panels, a
   tee). `stream.reconfigure(line_buffering=True)` on both streams, first thing, or
   the console lags the session by minutes.
-- **An operator abort is not a crash, and the files must say which.** voiceless_they,
-  2026-10-22: a quit at 30 s gave exit `0`, `.faults` = only `=== clean exit ===`,
-  the sentinel's `progress … end_reason=aborted`, and an `abort` event with note
-  `quit key` in `_events.csv`. Read them together; no single file tells you.
-
-### Reading a hang dump
-
-WinDbg (`winget install Microsoft.WinDbg`; nothing to do with conda) ships `cdb`:
-
-```powershell
-& "C:\Program Files\WindowsApps\Microsoft.WinDbg_<ver>_x64__8wekyb3d8bbwe\amd64\cdb.exe" `
-  -z <base>.hang1.dmp -c "~*kc 20; q"
-```
-
-The frozen main thread reads bottom-up from `python310!_PyEval_EvalFrameDefault`
-into whatever C call it is stuck in: exactly what `faulthandler` cannot show. Compare
-`hang1` with `hang2` (taken 60 s later): identical stacks mean a true deadlock, and
-moving stacks mean a stall that is still running.
+- **An operator abort must be distinguishable from a crash in the files.**
+  voiceless_they, 2026-10-22: a quit gave exit `0` and a clean `.faults`; only the
+  progress `end_reason=aborted` and the `abort` event said it was a quit. Write both.
 
 ### Prove it before trusting it
 
@@ -908,7 +877,7 @@ the baseline was measured on; a mismatch means re-baseline.
 | OS | Windows 11 Enterprise, build 26300 | |
 | power plan | High performance | |
 | uptime when fingerprinted | 199.6 h (8.3 days), 2026-10-22 | |
-| baseline | *not yet run* | *not yet run* |
+| baseline | `machine_baselines/LAB006_NEW.json` in voiceless_they (2026-10-25) | *not yet run* |
 
 On LAB006_NEW, check which GPU drives the participant display: two adapters each
 report an active 1920×1080 display. A PsychoPy window on the integrated UHD 770 is a
@@ -927,7 +896,7 @@ list of adapters.
 | fault-capture tests | `tools/test_fault_capture.py` | `tests/test_fault_capture.py` |
 | setup console + pre-flight | Emotions setup console | `setup_console.py`, `setup_dialog.py`, `preflight_checks.py` |
 | outlet only after source opens | — | `voiceless_they_experiment_run.py` (mic), `video_recording.VideoRecording.arm` (camera withdrawal) |
-| hold-Ctrl+C quit, stream watch | — | `session_guards.py` (`QuitGesture`, `StreamWatch`); wired in `LivePresenter._guard()` |
+| hold-Ctrl+C quit, stream watch | quit only: `emotions_experiment._install_quit_watcher` | `session_guards.py` (`QuitGesture`, `StreamWatch`); wired in `LivePresenter._guard()` |
 | fingerprint, stress test, baselines | — | `machine_health.py`, `machine_baselines/<HOST>.json` |
 | validation verdict | — | `validate_session.py` (stages `session_end`, `final`, `xdf`) |
 | tests (incl. deliberate mutations) | — | `tests/test_session_guards.py`, `test_guards_live.py`, `test_validate_session.py`, `test_machine_health.py`, `test_autopilot.py` |
